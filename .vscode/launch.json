@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "C++ Debug",
+            "type": "cppdbg",                 // 使用 GDB/LLDB 调试器
+            "request": "launch",
+            "program": "${workspaceFolder}/build/analyzer", // 可执行文件路径
+            "args": ["--input-list","ll_files_list.txt"],                       // 命令行参数
+            "cwd": "${workspaceFolder}",      // 工作目录
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "MIMode": "gdb",                  // 或 "lldb" (macOS/Clang)
+            "setupCommands": [
+                {
+                    "description": "启用 gdb 友好输出",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            //"preLaunchTask": "build",          // 可选：调试前执行的任务（编译）
+            "miDebuggerPath": "/usr/bin/gdb"   // 指定调试器路径
+        }
+    ]
+}

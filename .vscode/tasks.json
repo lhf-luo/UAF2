@@ -1,0 +1,16 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build llvm-project",
+            "type": "shell",
+            "command": "make",
+            "args": ["-j4"], // -j4 表示开启 4 线程并行编译，速度飞快
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        }
+    ]
+}
