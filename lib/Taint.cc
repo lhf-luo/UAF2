@@ -318,17 +318,6 @@ void TaintPass::ErrorReturnFuncAnalysis(Function *F) {
                         if (!TaintedValues.count(Ptr)) {
                             TaintedValues.insert(Ptr);
                             WorkList.push(Ptr);
-                            /*
-                            for (Value *SinkArg : SinkArgs) {
-                                if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Ptr)) {
-                                    if (GEP->getPointerOperand() == SinkArg) {
-                                        TaintedSinks.insert(SinkArg);
-                                    }
-                                } else if (Ptr == SinkArg) {
-                                    TaintedSinks.insert(SinkArg);
-                                }
-                            }
-                            */
                         }
                     }
                 } else if (CastInst *CI = dyn_cast<CastInst>(I)) {
@@ -474,33 +463,251 @@ void TaintPass::ErrorReturnFuncAnalysis(Function *F) {
     }
 
     // TODO handle release in ErrorBB
+
+    bool isChange=false;
     for(auto &pair:retValueBB){
         Value* ret=pair.first;
         retFunction[F].insert(ret);
         std::vector<FreePointInfo> NodeFreePoints;
         for (BasicBlock *BB : pair.second) {
-            
-            
             FindDirectFreePoints(BB, NodeFreePoints);
             FindReleaseWrapperFreePoints(BB, NodeFreePoints);
-            FindExternalFreePoints(BB, NodeFreePoints);
-            
+            FindExternalFreePoints(BB, NodeFreePoints);  
         }
-
         for (const FreePointInfo &FreePoint : NodeFreePoints){
             //has connect with Arg?
-            retFreePoint[ret].push_back(FreePoint);
+            retFreePoint[ret].insert(FreePoint);
             errs()<<"find condition release in "<<F->getName();
         }
-        ConditionReleaseWrapperAnalysis(ret,std::move(NodeFreePoints));
-    
+        isChange|=ConditionReleaseWrapperAnalysis(ret,std::move(NodeFreePoints)); 
     }
+
+    for(CallInst* CI:Ctx->Callers[F]){
+        IdentifyErrReturnRelease(CI,isChange);
+    }
+
 }
 
-void TaintPass::ConditionReleaseWrapperAnalysis(Value* V,std::vector<FreePointInfo> NodeFreePoints){
 
+void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWapperChange){
+    Function* F=CI->getFunction();
+    if(retFunction.count(F) && retFunction[F].count(CI)){
+        //Just focus on conditional release
+        if(isConditionReleaseWapperChange){
+            std::vector<FreePointInfo> NodeFreePoints;
+            FindConditionReleaseWrapperFreePoints(CI, NodeFreePoints);
+
+            for (const FreePointInfo &FreePoint : NodeFreePoints){
+                retFreePoint[CI].insert(FreePoint);
+            }
+            bool isChange=ConditionReleaseWrapperAnalysis(CI,std::move(NodeFreePoints));
+            for(CallInst* CI:Ctx->Callers[F]){
+                IdentifyErrReturnRelease(CI,isChange);
+            }
+        }
+        else{
+            return ;
+        }
+    }
+    std::set<ICmpInst*> ErrorValidations;
+    std::set<Value*> TaintedValues;
+    std::set<ReturnInst*> TaintedReturns;
+    std::queue<Value*> WorkList;
+
+    //
+    for (auto &BB : *F) {
+        for (auto &I : BB) {
+            if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
+                Value *Val = SI->getValueOperand();
+                Value *Ptr = SI->getPointerOperand();
+                
+                // Check if a null pointer is stored
+                if (isa<ConstantPointerNull>(Val)) {
+                    TaintedValues.insert(Ptr);
+                }
+                
+                // Check if a negative constant is stored
+                if (ConstantInt *CI = dyn_cast<ConstantInt>(Val)) {
+                    if (CI->isNegative()) {
+                        TaintedValues.insert(Ptr);
+                    }
+                }
+            }
+        }
+    }
+
+
+    WorkList.push(CI);
+    TaintedValues.insert(CI);
+
+
+    while (!WorkList.empty()){
+        Value* TaintedValue = WorkList.front();
+        WorkList.pop();
+        for (User* U : TaintedValue->users()){
+            if (Instruction* I = dyn_cast<Instruction>(U)){
+                if (BasicBlock* B = I->getParent())
+                    if (B->getParent() != F) continue;
+                if (TaintedValues.count(I)) continue;
+                bool NewTaint = false;
+
+                if (LoadInst* LI = dyn_cast<LoadInst>(I)) {
+                    if (LI->getPointerOperand() == TaintedValue) {
+                        NewTaint = true;
+                    }
+                }
+                else if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
+                    if (SI->getValueOperand() == TaintedValue) {
+                        Value* Ptr = SI->getPointerOperand();
+                        if (!TaintedValues.count(Ptr)) {
+                            TaintedValues.insert(Ptr);
+                            WorkList.push(Ptr);
+                        }
+                    }
+                }
+                else if (CastInst* CI = dyn_cast<CastInst>(I)) {
+                    NewTaint = true;
+                }
+                else if (PHINode* PHI = dyn_cast<PHINode>(I)) {
+                    for (unsigned i = 0; i < PHI->getNumIncomingValues(); i++) {
+                        if (PHI->getIncomingValue(i) == TaintedValue) {
+                            NewTaint = true;
+                            break;
+                        }
+                    }
+                }
+                else if (GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(I)) {
+                    if (GEP->getPointerOperand() == TaintedValue) {
+                        NewTaint = true;
+                    }
+                }
+                else if (CallInst* CallI = dyn_cast<CallInst>(I)) {
+                    for (unsigned i = 0; i < CallI->arg_size(); i++) {
+                        if (CallI->getArgOperand(i) == TaintedValue) {
+                            if (!CallI->getType()->isVoidTy()) {
+                                NewTaint = true;
+                            }
+                            break;
+                        }
+                    }
+                }
+                else if (BinaryOperator* BinOp = dyn_cast<BinaryOperator>(I)) {
+                    if (BinOp->getOperand(0) == TaintedValue ||
+                        BinOp->getOperand(1) == TaintedValue) {
+                        NewTaint = true;
+                    }
+                }
+                else if (ReturnInst* RI = dyn_cast<ReturnInst>(I)) {
+                    Value* RetVal = RI->getReturnValue();
+                    if (RetVal == TaintedValue) {
+                        TaintedReturns.insert(RI);
+                    }
+                }
+                else if (ICmpInst* Cmp = dyn_cast<ICmpInst>(I)) {
+                    if (Cmp->getOperand(0) == TaintedValue || Cmp->getOperand(1) == TaintedValue) {
+                        ErrorValidations.insert(Cmp);
+                        NewTaint = true;
+                    }
+                }
+                else {
+                    for (Use& Op : I->operands()) {
+                        if (Op.get() == TaintedValue) {
+                            NewTaint = true;
+                            break;
+                        }
+                    }
+                }
+                if (NewTaint) {
+                    TaintedValues.insert(I);
+                    WorkList.push(I);
+                }
+
+            }
+        }
+    }
+
+    bool isErrorReturn=!TaintedReturns.empty(); //
+
+    if(!isErrorReturn){
+        return ;
+    }
+
+    // -------------------------------------
+    Ctx->ErrorReturnFuncs.insert(F);
+    retFunction[F].insert(CI);
+
+
+    std::set<llvm::BasicBlock*> DirectErrorBBs;
+    for (ICmpInst* Cmp : ErrorValidations){ //There should be only one.
+        for (User* U : Cmp->users()){
+            if (BranchInst* BI = dyn_cast<BranchInst>(U)) {
+                if (BI->isConditional() && BI->getCondition() == Cmp) {
+                    BasicBlock* TrueBB = BI->getSuccessor(0);
+                    BasicBlock* FalseBB = BI->getSuccessor(1);
+
+                    bool errorInTrueBranch = DetermineErrorBranch(Cmp);
+
+                    if (errorInTrueBranch) {
+                        DirectErrorBBs.insert(TrueBB);
+                    }
+                    else {
+                        DirectErrorBBs.insert(FalseBB);
+                    }
+                    //DirectErrorBBs.insert(BI->getParent());
+                }
+            }
+        }
+    }
+    std::queue<BasicBlock*> BBWorkList;
+    std::set<BasicBlock*> Visited;
+
+    for (BasicBlock* DirectErrorBB : DirectErrorBBs) {
+        BBWorkList.push(DirectErrorBB);
+        Visited.insert(DirectErrorBB);
+    }
+
+    while (!BBWorkList.empty()) {
+        BasicBlock* CurrentBB = BBWorkList.front();
+        BBWorkList.pop();
+        for (BasicBlock* Succ : successors(CurrentBB)) {
+            if (Visited.count(Succ)) continue;
+            BBWorkList.push(Succ);
+            Visited.insert(Succ);
+        }
+    }
+    DirectErrorBBs.insert(Visited.begin(), Visited.end());
+
+    
+    std::vector<FreePointInfo> NodeFreePoints;
+    bool isFindConditionRelease=false;
+    for (BasicBlock* BB : DirectErrorBBs){
+        FindDirectFreePoints(BB, NodeFreePoints);
+        FindReleaseWrapperFreePoints(BB, NodeFreePoints);
+        FindExternalFreePoints(BB, NodeFreePoints);
+            //The conditional release corresponding to the error return.
+    }
+    if(isConditionReleaseWapperChange){
+        FindConditionReleaseWrapperFreePoints(CI, NodeFreePoints);
+    }
+    
     for (const FreePointInfo &FreePoint : NodeFreePoints){
+        //has connect with Arg?
+        retFreePoint[CI].insert(FreePoint);
+        printInstruction(CI);
+        errs()<<":find condition release in "<<F->getName();
+    }
 
+    bool isChange=ConditionReleaseWrapperAnalysis(CI,std::move(NodeFreePoints));
+
+    for(CallInst* CI:Ctx->Callers[F]){
+        IdentifyErrReturnRelease(CI,isChange);
+    }
+
+}
+
+bool TaintPass::ConditionReleaseWrapperAnalysis(Value* V,std::vector<FreePointInfo> NodeFreePoints){
+    bool isChange=false;
+    for (const FreePointInfo &FreePoint : NodeFreePoints){
         std::map<int, std::string> arg_access_map;
         Value* FreedPointer=FreePoint.FreedPointer;//
         Function * F=FreePoint.ContainingFunc;
@@ -513,10 +720,16 @@ void TaintPass::ConditionReleaseWrapperAnalysis(Value* V,std::vector<FreePointIn
             std::vector<int> FieldPath;
             getFieldPath(local_path,FieldPath);
             FieldPath.insert(FieldPath.end(),FreePoint.FieldPath.begin(),FreePoint.FieldPath.end());
-            retConditionReleaseWrapper[V].insert(new ConditionReleaseWrapper(F,FieldPath,CI,pair.first));
-            errs()<<"\nfind condition release wrapper"<<F->getName();
+            
+            ConditionReleaseWrapper CRW(F,FieldPath,CI,pair.first);
+
+            
+            auto p=retConditionReleaseWrapper[V].insert(CRW);
+            isChange|=p.second;
+            errs()<<"\nfind condition release wrapper"<<F->getName(); 
         }
     }
+    return isChange;
 }
 
 
@@ -610,118 +823,13 @@ Value* TaintPass::isFromERR(Value* TaintedValue,set<Value*>& ErrorCodeVarsFromER
     }
     return nullptr;
 }
+
 /*
-void test(Value* ErrorReturnVar,std::set<llvm::BasicBlock>& DirectErrorBBs,Function* F) {
-    std::set<Value*> TaintedValues;
-    TaintedValues.insert(ErrorReturnVar);
-    std::queue<Value*> WorkList;
-    std::set<BasicBlock*> DirectErrorBBs;
-
-    WorkList.push(ErrorReturnVar);
-
-    std::set<Instruction*> ErrorValidations;
-    while (!WorkList.empty()) {
-        Value* TaintedValue = WorkList.front();
-        WorkList.pop();
-
-        for (User* U : TaintedValue->users()) {
-            if (Instruction* I = dyn_cast<Instruction>(U)) {
-                if (!I->getParent() || I->getParent()->getParent() != F) continue;
-                if (TaintedValues.count(I)) continue;
-
-                bool NewTaint = false;
-
-                if (LoadInst* LI = dyn_cast<LoadInst>(I)) {
-                    if (LI->getPointerOperand() == TaintedValue) NewTaint = true;
-                }
-                else if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
-                    if (SI->getValueOperand() == TaintedValue) {
-                        Value* Ptr = SI->getPointerOperand();
-                        if (!TaintedValues.count(Ptr)) {
-                            TaintedValues.insert(Ptr);
-                            WorkList.push(Ptr);
-                        }
-                    }
-                }
-                else if (BitCastInst* BC = dyn_cast<BitCastInst>(I)) {
-                    if (BC->getOperand(0) == TaintedValue) NewTaint = true;
-                }
-                else if (PHINode* PN = dyn_cast<PHINode>(I)) {
-                    for (Value* Inc : PN->incoming_values()) {
-                        if (Inc == TaintedValue) {
-                            NewTaint = true;
-                            break;
-                        }
-                    }
-                }
-                else if (ICmpInst* Cmp = dyn_cast<ICmpInst>(I)) {
-                    if (Cmp->getOperand(0) == TaintedValue || Cmp->getOperand(1) == TaintedValue) {
-                        ErrorValidations.insert(Cmp);
-                        NewTaint = true;
-                    }
-                }
-                else if (CallInst* CI = dyn_cast<CallInst>(I)) {
-                    Function* Callee = CI->getCalledFunction();
-                    if (Callee) {
-                        StringRef Name = Callee->getName();
-                        if (Name.contains("IS_ERR") || Name.contains("PTR_ERR")) {
-                            for (unsigned i = 0; i < CI->arg_size(); i++) {
-                                if (CI->getArgOperand(i) == TaintedValue) {
-                                    ErrorValidations.insert(CI);
-                                    NewTaint = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    for (unsigned i = 0; i < CI->arg_size(); i++) {
-                        if (CI->getArgOperand(i) == TaintedValue) {
-                            if (!CI->getType()->isVoidTy()) NewTaint = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (NewTaint) {
-                    TaintedValues.insert(I);
-                    WorkList.push(I);
-                }
-            }
-        }
-    }
-
-    for (Instruction *Validation : ErrorValidations) {
-        for (User *U : Validation->users()) {
-            if (BranchInst *BI = dyn_cast<BranchInst>(U)) {
-                if (BI->isConditional() && BI->getCondition() == Validation) {
-                    BasicBlock *TrueBB = BI->getSuccessor(0);
-                    BasicBlock *FalseBB = BI->getSuccessor(1);
-                    
-                    bool errorInTrueBranch = DetermineErrorBranch(Validation);
-                    
-                    if (errorInTrueBranch) {
-                        DirectErrorBBs.insert(TrueBB);
-                    } else {
-                        DirectErrorBBs.insert(FalseBB);
-                    }
-                    DirectErrorBBs.insert(BI->getParent());
-                }
-            }
-        }
-    }
-
-
-
-}
-*/
 bool TaintPass::InterproceduralErrorAnalysis(Function *F) {
     std::set<Value*> ErrorReturnCalls; // change
     std::map<CallInst*, Value*> ErrorReturnVars;
 
     std::map<Value*,std::set<Function*>> ErrorReturnFunction;
-    if(F->getName().contains("mlx5_ib_stage_post_ib_reg_umr_init")){
-        errs()<<"debug";
-    }
     for (auto &BB : *F) {
         for (auto &I : BB) {
             if (CallInst *CI = dyn_cast<CallInst>(&I)) {
@@ -771,7 +879,7 @@ bool TaintPass::InterproceduralErrorAnalysis(Function *F) {
             }
         }
     }
-    */
+    
 
     
     std::set<Value*> TaintedValues;
@@ -985,9 +1093,11 @@ bool TaintPass::InterproceduralErrorAnalysis(Function *F) {
     }
     return true;
 }
+*/
 
 void TaintPass::FindConditionReleaseWrapperFreePoints(Value *V, std::vector<FreePointInfo> &FreePoints){
     // all error return freepoint
+
     CallInst *CI = dyn_cast<CallInst>(V);
     if(!CI){
         return;
@@ -1003,15 +1113,16 @@ void TaintPass::FindConditionReleaseWrapperFreePoints(Value *V, std::vector<Free
             CalledFunction.insert(PotentialCallee);
         }
     }
+    
     for(Function* F:CalledFunction){
-        //
         for(Value* retValue:retFunction[F]){
-            for(ConditionReleaseWrapper* CRW:retConditionReleaseWrapper[retValue]){
-
+            for(const ConditionReleaseWrapper& CRW:retConditionReleaseWrapper[retValue]){
                 std::string freeType = "condition_release[" + 
-                      CRW->path + "]";
-                Value *BasePtr = CI->getArgOperand(CRW->argIdx);
+                      std::to_string(CRW.argIdx) + "]";
+                Value *BasePtr = CI->getArgOperand(CRW.argIdx);           
                 FreePointInfo FreePoint(CI, BasePtr, CI->getFunction(), CI->getParent(), CI, freeType);
+                FreePoint.FieldPath=CRW.FiledPath;
+
                 FreePoints.push_back(FreePoint);
 
                 errs() << "  Found condition free (indirect/direct): " << F->getName()
@@ -1019,6 +1130,7 @@ void TaintPass::FindConditionReleaseWrapperFreePoints(Value *V, std::vector<Free
             }
         }
     }
+    
 }
 
 // ========== CFG Construction Functions ========== 
@@ -2854,7 +2966,7 @@ bool TaintPass::runOnModule(Module *M) {
     for (auto &F : *M) {
         ErrorReturnFuncAnalysis(&F);
     }
-    
+    /*
     bool Changed = true;
     while (Changed) {
         Changed = false;
@@ -2865,8 +2977,24 @@ bool TaintPass::runOnModule(Module *M) {
             }
         }
     }
+    */
+
+    errs()<<"condition release fucntion";
+
+
+
     for(Function* F:Ctx->ErrorReturnFuncs){
+        errs()<< "-----------";
         errs() << "Function " << F->getName() << " identified as an interprocedural error-propagating function\n";
+        for(Value* V:retFunction[F]){
+            if(retFreePoint.count(V)){
+                errs() << "Function " << F->getName() <<" has condition release\n";
+            }
+            if(retConditionReleaseWrapper.count(V)){
+                errs() << "Function " << F->getName() <<" is conditionReleaseWraper\n";
+            }
+        }
+        errs()<< "------------";
     }
     
     // Phase 2 & 3: 构建CFG (Deprecated)

@@ -113,6 +113,12 @@ struct FreePointInfo {
                   Instruction *Inst, std::string Type)
         : FreeCall(CI), FreedPointer(Ptr), ContainingFunc(F), ContainingBB(BB),
           TriggerInst(Inst), FreeType(Type) {}
+
+
+    bool operator<(const FreePointInfo& other) const {
+        return std::tie(FreeCall, FreedPointer, FreeType) < 
+               std::tie(other.FreeCall, other.FreedPointer, other.FreeType);
+    }
 };
 
 // 域敏感的污点状态
@@ -217,12 +223,17 @@ struct ConditionReleaseWrapper{
             path=oss.str();
         }
     }
+    bool operator<(const ConditionReleaseWrapper& other) const {
+        return std::tie(F, ReleaseCall, argIdx, path) < 
+               std::tie(other.F, other.ReleaseCall, other.argIdx, other.path);
+    }
 };
 
 class TaintPass : public IterativeModulePass {
 private:
-    std::map<Value*,std::set<ConditionReleaseWrapper*>> retConditionReleaseWrapper;
-    std::map<Value*,std::vector<FreePointInfo>> retFreePoint; //int return err:
+    std::set<Function* > ConditionReleaseWrappers;
+    std::map<Value*,std::set<ConditionReleaseWrapper>> retConditionReleaseWrapper;
+    std::map<Value*,std::set<FreePointInfo>> retFreePoint; //int return err:
     std::map<Function*,set<Value*>> retFunction;
 
     static constexpr int MAX_PROPAGATION_DEPTH = 15;
@@ -330,10 +341,11 @@ private:
     
     Value* isFromERR(Value* TaintedValue,set<Value*>& ErrorCodeVarsFromERR);
     void ConditionErrorReturnAnalysis(std::map<Value*,std::set<Function*>> ErrorReturnFunction);
-    void ConditionReleaseWrapperAnalysis(Value* V,std::vector<FreePointInfo> NodeFreePoints);
+    bool ConditionReleaseWrapperAnalysis(Value* V,std::vector<FreePointInfo> NodeFreePoints);
     void checkValueComesFromArg(Function* F,Value* FreedPointer,std::map<int, std::string>& arg_access_map);
     void getFieldPath(std::string& PathHash,std::vector<int>& FieldPath);
     void FindConditionReleaseWrapperFreePoints(Value *V, std::vector<FreePointInfo> &FreePoints);
+    void IdentifyErrReturnRelease(CallInst* CI,bool isFindConditionRelease=true);
 public:
     enum AnalysisMode { MODE_UAF, MODE_NPD };
     AnalysisMode CurrentMode = MODE_UAF; 
