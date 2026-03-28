@@ -519,15 +519,10 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
             return ;
         }
     }
-    
-    
     std::set<ICmpInst*> ErrorValidations;
     std::set<Value*> TaintedValues;
     std::set<ReturnInst*> TaintedReturns;
     std::queue<Value*> WorkList;
-
-    //
-    
     for (auto &BB : *F) {
         for (auto &I : BB) {
             if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
@@ -550,17 +545,9 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
             }
         }
     }
-
-    
-
-    
     WorkList.push(CI);
     TaintedValues.insert(CI);
 
-    if(F->getName().contains("mlx5_ib_stage_post_ib_reg_umr_init")){
-        errs()<<"debug";
-        printInstruction(CI);
-    }
     while (!WorkList.empty()){
         Value* TaintedValue = WorkList.front();
         WorkList.pop();
@@ -728,9 +715,6 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
     bool isChange=ConditionReleaseWrapperAnalysis(CI,std::move(NodeFreePoints));
 
     for(CallInst* CI:Ctx->Callers[F]){
-        if(CI->getFunction()->getName().contains("__mlx5_ib_add")){
-            errs()<<"DEBUG";
-        }
         IdentifyErrReturnRelease(CI,isChange);
     }
 
@@ -854,277 +838,6 @@ Value* TaintPass::isFromERR(Value* TaintedValue,set<Value*>& ErrorCodeVarsFromER
     }
     return nullptr;
 }
-
-/*
-bool TaintPass::InterproceduralErrorAnalysis(Function *F) {
-    std::set<Value*> ErrorReturnCalls; // change
-    std::map<CallInst*, Value*> ErrorReturnVars;
-
-    std::map<Value*,std::set<Function*>> ErrorReturnFunction;
-    for (auto &BB : *F) {
-        for (auto &I : BB) {
-            if (CallInst *CI = dyn_cast<CallInst>(&I)) {
-                
-                Function *Callee = CI->getCalledFunction();
-                
-                if (Callee && Ctx->ErrorReturnFuncs.count(Callee)) {
-                    ErrorReturnCalls.insert(CI);
-                    ErrorReturnVars[CI] = CI;
-                    ErrorReturnFunction[CI].insert(Callee);
-                    
-                    continue;
-                }
-                
-                if (!Callee) {
-                    auto Callees = Ctx->Callees.find(CI);
-                    if (Callees != Ctx->Callees.end()) {
-                        for (Function *PotentialCallee : Callees->second) {
-                            if (Ctx->ErrorReturnFuncs.count(PotentialCallee)) {
-                                ErrorReturnCalls.insert(CI);
-                                ErrorReturnVars[CI] = CI;
-                                ErrorReturnFunction[CI].insert(PotentialCallee);
-                              
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        
-        }
-    }
-    
-    if (ErrorReturnCalls.empty()) {
-        return false;
-    }
-    
-    //errs() << "Found " << ErrorReturnCalls.size() << " calls to error-returning functions in " 
-           //<< F->getName() << ", running interprocedural taint analysis...\n";
-    
-    /*
-    std::set<ReturnInst*> SinkReturns;//not use
-    for (auto &BB : *F) {
-        for (auto &I : BB) {
-            if (ReturnInst *RI = dyn_cast<ReturnInst>(&I)) {
-                SinkReturns.insert(RI);
-            }
-        }
-    }
-    
-
-    
-    std::set<Value*> TaintedValues;
-    std::set<ReturnInst*> TaintedReturns;
-    std::map<Value*, Instruction*> ErrorValidations; //Which jump statement is callInst associated with?
-    
-    std::queue<Value*> WorkList;
-    for (auto &Entry : ErrorReturnVars) {
-        Value *ErrorRetVal = Entry.second;
-        TaintedValues.insert(ErrorRetVal);
-        WorkList.push(ErrorRetVal);
-    }
-    
-    while (!WorkList.empty()) {
-        Value *TaintedValue = WorkList.front();
-        WorkList.pop();
-        if(Instruction* I=dyn_cast<Instruction>(TaintedValue)){
-            printInstruction(I);
-        }
-        for (User *U : TaintedValue->users()) {
-            if (Instruction *I = dyn_cast<Instruction>(U)) {
-                printInstruction(I);
-                if (BasicBlock *B = I->getParent())
-                    if (B->getParent() != F) continue;
-                
-                if (TaintedValues.count(I)) continue;
-                
-                bool NewTaint = false;
-                
-                if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
-                    if (LI->getPointerOperand() == TaintedValue) {
-                        NewTaint = true;
-                    }
-                } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
-                    if (SI->getValueOperand() == TaintedValue) {
-                        Value *Ptr = SI->getPointerOperand();
-                        if (!TaintedValues.count(Ptr)) {
-                            TaintedValues.insert(Ptr);
-                            WorkList.push(Ptr);
-                        }
-                    }
-                } else if (CastInst *CI = dyn_cast<CastInst>(I)) {
-                    NewTaint = true;
-                } else if (PHINode *PHI = dyn_cast<PHINode>(I)) {
-                    for (unsigned i = 0; i < PHI->getNumIncomingValues(); i++) {
-                        if (PHI->getIncomingValue(i) == TaintedValue) {
-                            NewTaint = true;
-                            break;
-                        }
-                    }
-                } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(I)) {
-                    if (GEP->getPointerOperand() == TaintedValue) {
-                        NewTaint = true;
-                    }
-                } else if (CallInst *CallI = dyn_cast<CallInst>(I)) {
-                    for (unsigned i = 0; i < CallI->arg_size(); i++) {
-                        if (CallI->getArgOperand(i) == TaintedValue) {
-                            if (!CallI->getType()->isVoidTy()) {
-                                NewTaint = true;
-                            }
-                            break;
-                        }
-                    }
-                } else if (BinaryOperator *BinOp = dyn_cast<BinaryOperator>(I)) {
-                    if (BinOp->getOperand(0) == TaintedValue || 
-                        BinOp->getOperand(1) == TaintedValue) {
-                        NewTaint = true;
-                    }
-                } else if (ReturnInst *RI = dyn_cast<ReturnInst>(I)) {
-                    Value *RetVal = RI->getReturnValue();
-                    if (RetVal == TaintedValue) {
-                        TaintedReturns.insert(RI);
-                    }
-                } else if (ICmpInst* Cmp = dyn_cast<ICmpInst>(I)) {
-
-                    if (Cmp->getOperand(0) == TaintedValue || Cmp->getOperand(1) == TaintedValue) {
-                        Value* V = isFromERR(TaintedValue, ErrorReturnCalls);
-                        if (V) {
-                            ErrorValidations[V] = Cmp;
-                        }
-                        
-                        NewTaint = true;
-                    }
-                }else {
-                    for (Use &Op : I->operands()) {
-                        if (Op.get() == TaintedValue) {
-                            NewTaint = true;
-                            break;
-                        }
-                    }
-                }
-                
-                if (NewTaint) {
-                    TaintedValues.insert(I);
-                    WorkList.push(I);
-                    
-                    if (ReturnInst *RI = dyn_cast<ReturnInst>(I)) {
-                        Value *RetVal = RI->getReturnValue();
-                        if (RetVal && TaintedValues.count(RetVal)) {
-                            TaintedReturns.insert(RI);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    bool IsErrorPropagatingFunc = !TaintedReturns.empty();
-    
-    if (!IsErrorPropagatingFunc) {
-        
-        return false;
-    }
-    Ctx->ErrorReturnFuncs.insert(F);
-    //errs() << "\nFunction " << F->getName() << " identified as an interprocedural error-propagating function\n";
-        
-
-    //------------------------------------------
-    std::map<Value*, std::set<llvm::BasicBlock*>> retValueBB;
-    for (auto pair : ErrorValidations) {
-        Instruction* Validation = pair.second;
-        Value* retValue = pair.first;
-        for (User* U : Validation->users()) {
-            if (BranchInst* BI = dyn_cast<BranchInst>(U)) {
-                if (BI->isConditional() && BI->getCondition() == Validation) {
-                    BasicBlock* TrueBB = BI->getSuccessor(0);
-                    BasicBlock* FalseBB = BI->getSuccessor(1);
-
-                    bool errorInTrueBranch = DetermineErrorBranch(Validation);
-
-                    if (errorInTrueBranch) {
-                        retValueBB[retValue].insert(TrueBB);
-                    }
-                    else {
-                        retValueBB[retValue].insert(FalseBB);
-                    }
-                    //DirectErrorBBs.insert(BI->getParent());
-                }
-            }
-        }
-    }
-
-    std::set<BasicBlock*> BackReachable;
-    std::vector<BasicBlock*> BackWorkList;
-    std::set<BasicBlock*> SinkBlocks;
-
-    for (ReturnInst* RI : TaintedReturns) {
-        SinkBlocks.insert(RI->getParent());
-    }
-
-    for (BasicBlock* BB : SinkBlocks) {
-        BackReachable.insert(BB);
-        BackWorkList.push_back(BB);
-    }
-
-
-    while (!BackWorkList.empty()) {
-        BasicBlock* CurrentBB = BackWorkList.back();
-        BackWorkList.pop_back();
-
-        for (BasicBlock* Pred : predecessors(CurrentBB)) {
-            if (BackReachable.insert(Pred).second) {
-                BackWorkList.push_back(Pred);
-            }
-        }
-    }
-    for (auto& pair : retValueBB) {
-        std::queue<BasicBlock*> BBWorkList;
-        std::set<BasicBlock*> DirectErrorBBs = pair.second;
-        std::set<BasicBlock*> Visited;
-        for (BasicBlock* DirectErrorBB : DirectErrorBBs) {
-            BBWorkList.push(DirectErrorBB);
-            Visited.insert(DirectErrorBB);
-        }
-
-        while (!BBWorkList.empty()) {
-            BasicBlock* CurrentBB = BBWorkList.front();
-            BBWorkList.pop();
-            for (BasicBlock* Succ : successors(CurrentBB)) {
-                if (Visited.count(Succ)) continue;
-                if (BackReachable.count(Succ)) {
-                    BBWorkList.push(Succ);
-                    Visited.insert(Succ);
-                }
-            }
-        }
-        pair.second.insert(Visited.begin(), Visited.end());
-    }
-
-    // TODO handle release in ErrorBB
-    for (auto& pair : retValueBB) {
-        Value* ret = pair.first;
-        retFunction[F].insert(ret);
-        std::vector<FreePointInfo> NodeFreePoints;
-
-        for (BasicBlock* BB : pair.second) {
-            FindDirectFreePoints(BB, NodeFreePoints);
-            FindReleaseWrapperFreePoints(BB, NodeFreePoints);
-            FindExternalFreePoints(BB, NodeFreePoints);
-            //The conditional release corresponding to the error return.
-            FindConditionReleaseWrapperFreePoints(ret,NodeFreePoints);
-        }
-        for (const FreePointInfo& FreePoint : NodeFreePoints) {
-                
-                retFreePoint[ret].push_back(FreePoint);
-                errs()<<"find condition release in "<<F->getName()<<" ";
-                
-        }
-        //has connect with Arg?
-        ConditionReleaseWrapperAnalysis(ret,std::move(NodeFreePoints));
-    }
-    return true;
-}
-*/
 
 void TaintPass::FindConditionReleaseWrapperFreePoints(Value *V, std::vector<FreePointInfo> &FreePoints){
     // all error return freepoint
@@ -1456,12 +1169,14 @@ void TaintPass::IdentifyErrorHandlingPaths(Function *F) {
     
     
     // DEBUG PRINT (Final)
+    /*
     if (F->getName().contains("__mlx5_ib_add")) {
         errs() << "  DirectBBs: " << DirectErrorBBs.size() << "\n";
         errs() << "  SinkBlocks: " << SinkBlocks.size() << "\n";
         errs() << "  BackReachable: " << BackReachable.size() << "\n";
         errs() << "  ErrorBBs: " << ErrorHandlingBlocks.size() << "\n";
     }
+        */
 }
 
 bool TaintPass::DetermineErrorBranch(Instruction *Validation) {
@@ -1906,12 +1621,13 @@ void TaintPass::CheckCallInstWithDerefSummary(
         
         // 2. Wrapper Double Free
         if (RWAnalyzer.Result.isReleaseWrapper(F)) {
+            /*
             if (F->getName().contains("mlx5r_umr_resource_cleanup")) {
                 errs() << "DEBUG: Checking Wrapper mlx5r_umr_resource_cleanup in " << CI->getFunction()->getName() << "\n";
                 if (Taint.TaintedValue) errs() << "  Taint: " << *Taint.TaintedValue << "\n";
                 else errs() << "  Taint is NULL\n";
             }
-            
+            */
             std::string CName = CalleeName.str();
             auto it = RWAnalyzer.Result.GlobalReleaseTransitMap.find(CName);
             if (it != RWAnalyzer.Result.GlobalReleaseTransitMap.end()) {
@@ -1921,7 +1637,7 @@ void TaintPass::CheckCallInstWithDerefSummary(
                     
                     Value *Arg = CI->getArgOperand(argIdx);
                     if (!Arg->getType()->isPointerTy()) continue;
-                    
+                    /*
                     if (CI->getFunction()->getName().contains("__mlx5_ib_add")) {
                          bool alias = IsAliased(getBasePointer(Arg), getBasePointer(Taint.TaintedValue), aliasCtx);
                          if (!alias) {
@@ -1932,6 +1648,7 @@ void TaintPass::CheckCallInstWithDerefSummary(
                              errs() << "DEBUG: IsAliased PASSED\n";
                          }
                     }
+                         */
                     
                     if (!IsAliased(getBasePointer(Arg), getBasePointer(Taint.TaintedValue), aliasCtx))
                         continue;
@@ -1974,11 +1691,7 @@ void TaintPass::CheckCallInstWithDerefSummary(
                     CheckCallWithCallee(CI, PotentialCallee, Taint, aliasCtx);
                 }
             }
-        } else {
-             if (CI->getFunction()->getName().contains("__mlx5_ib_add")) {
-                 errs() << "DEBUG: No targets in Ctx->Callees for call: " << *CI << "\n";
-             }
-        }
+        } 
     }
     
     // 如果没有 callee 信息，进行保守检查

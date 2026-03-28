@@ -1379,7 +1379,6 @@ bool CallGraphPass::doInitialization(Module *M) {
 
 			if(STyName.find("anon")==std::string::npos){
 				if(IsDegradedStructType(STy)){
-					
 					StructGroups[STyName].push_back(STy);
 				}
 			}
