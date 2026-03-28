@@ -2469,7 +2469,6 @@ bool CallGraphPass::runOnModule(Module *M) {
 
 				// Indirect call
 				if (!CF) { 
-					printInstruction(CI);
 					FindCalleesWithSMLTA(CI, *FS);
 					for (auto F : *FS) {
 						Ctx->Callers[F].insert(CI);

@@ -83,6 +83,8 @@ class CallGraphPass : public IterativeModulePass {
 		
 		
 		// ==================Functions====================
+		bool isBitcastFunction(CallInst* CI,FuncSet *FS);
+
 		void IterativeGlobalVariable(GlobalVariable *GVouter, GlobalVariable *GVinner, Value *v);
 		void GVTypeFunctionRecord(GlobalVariable *GV, Function *F, Value *v, std::string FTyName);
 		Value *NextLayerTypeExtraction(Value *v);

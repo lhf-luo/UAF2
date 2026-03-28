@@ -243,6 +243,7 @@ protected:
 public:
 	IterativeModulePass(GlobalContext *Ctx_, const char *ID_)
 		: ModulePass(PassID), Ctx(Ctx_), ID(ID_) {
+			errs()<<"debug iterive ";
 		 }
 
 	// Run on each module before iterative pass.

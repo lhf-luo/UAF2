@@ -59,6 +59,7 @@ struct FreeCallInfo {
     
     FreeCallInfo(CallInst *CI, Value *Ptr, Function *F, BasicBlock *BB) 
         : FreeCall(CI), FreedPointer(Ptr), ContainingFunc(F), ContainingBB(BB) {}
+
 };
 
 // 危险使用信息
@@ -235,6 +236,8 @@ private:
     std::map<Value*,std::set<ConditionReleaseWrapper>> retConditionReleaseWrapper;
     std::map<Value*,std::set<FreePointInfo>> retFreePoint; //int return err:
     std::map<Function*,set<Value*>> retFunction;
+    std::map<Value*,std::set<FreePointInfo>> retConditionFailFreePoints;
+
 
     static constexpr int MAX_PROPAGATION_DEPTH = 15;
     
@@ -356,7 +359,8 @@ public:
           RWAnalyzer(Ctx_), 
           DerefAnalyzer(Ctx_),
           NRAnalyzer(Ctx_) {
-           } 
+            errs()<<"TainPass ok";
+        } 
             
           
 private:

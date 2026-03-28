@@ -491,6 +491,11 @@ void TaintPass::ErrorReturnFuncAnalysis(Function *F) {
 
 void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWapperChange){
     Function* F=CI->getFunction();
+
+    if(F->getName().contains("mlx5_ib_add")){
+        printInstruction(CI);
+    }
+    llvm::BasicBlock* CIBB=CI->getParent();
     if(retFunction.count(F) && retFunction[F].count(CI)){
         //Just focus on conditional release
         if(isConditionReleaseWapperChange){
@@ -502,6 +507,7 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
             }
             bool isChange=ConditionReleaseWrapperAnalysis(CI,std::move(NodeFreePoints));
             for(CallInst* CI:Ctx->Callers[F]){
+                
                 IdentifyErrReturnRelease(CI,isChange);
             }
         }
@@ -509,12 +515,15 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
             return ;
         }
     }
+    
+    
     std::set<ICmpInst*> ErrorValidations;
     std::set<Value*> TaintedValues;
     std::set<ReturnInst*> TaintedReturns;
     std::queue<Value*> WorkList;
 
     //
+    
     for (auto &BB : *F) {
         for (auto &I : BB) {
             if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
@@ -524,23 +533,30 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
                 // Check if a null pointer is stored
                 if (isa<ConstantPointerNull>(Val)) {
                     TaintedValues.insert(Ptr);
+                    WorkList.push(Ptr);
                 }
                 
                 // Check if a negative constant is stored
                 if (ConstantInt *CI = dyn_cast<ConstantInt>(Val)) {
                     if (CI->isNegative()) {
                         TaintedValues.insert(Ptr);
+                        WorkList.push(Ptr);
                     }
                 }
             }
         }
     }
 
+    
 
+    
     WorkList.push(CI);
     TaintedValues.insert(CI);
 
-
+    if(F->getName().contains("mlx5_ib_stage_post_ib_reg_umr_init")){
+        errs()<<"debug";
+        printInstruction(CI);
+    }
     while (!WorkList.empty()){
         Value* TaintedValue = WorkList.front();
         WorkList.pop();
@@ -604,8 +620,13 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
                     }
                 }
                 else if (ICmpInst* Cmp = dyn_cast<ICmpInst>(I)) {
+
                     if (Cmp->getOperand(0) == TaintedValue || Cmp->getOperand(1) == TaintedValue) {
-                        ErrorValidations.insert(Cmp);
+                        llvm::BasicBlock* CmpB=Cmp->getParent();
+
+                        if(CIBB==CmpB){
+                            ErrorValidations.insert(Cmp);
+                        }
                         NewTaint = true;
                     }
                 }
@@ -626,11 +647,14 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
         }
     }
 
+    
     bool isErrorReturn=!TaintedReturns.empty(); //
+
 
     if(!isErrorReturn){
         return ;
     }
+    
 
     // -------------------------------------
     Ctx->ErrorReturnFuncs.insert(F);
@@ -693,13 +717,16 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
     for (const FreePointInfo &FreePoint : NodeFreePoints){
         //has connect with Arg?
         retFreePoint[CI].insert(FreePoint);
-        printInstruction(CI);
+        printInstruction(FreePoint.FreeCall);
         errs()<<":find condition release in "<<F->getName();
     }
 
     bool isChange=ConditionReleaseWrapperAnalysis(CI,std::move(NodeFreePoints));
 
     for(CallInst* CI:Ctx->Callers[F]){
+        if(CI->getFunction()->getName().contains("__mlx5_ib_add")){
+            errs()<<"DEBUG";
+        }
         IdentifyErrReturnRelease(CI,isChange);
     }
 
@@ -1099,6 +1126,7 @@ void TaintPass::FindConditionReleaseWrapperFreePoints(Value *V, std::vector<Free
     // all error return freepoint
 
     CallInst *CI = dyn_cast<CallInst>(V);
+    Function *ParentF=CI->getFunction();
     if(!CI){
         return;
     }
@@ -1118,12 +1146,14 @@ void TaintPass::FindConditionReleaseWrapperFreePoints(Value *V, std::vector<Free
         for(Value* retValue:retFunction[F]){
             for(const ConditionReleaseWrapper& CRW:retConditionReleaseWrapper[retValue]){
                 std::string freeType = "condition_release[" + 
-                      std::to_string(CRW.argIdx) + "]";
+                      std::to_string(CRW.argIdx) + "]"+" when condition fail of "+F->getName().str()\
+                      +" in "+ParentF->getName().str();
                 Value *BasePtr = CI->getArgOperand(CRW.argIdx);           
                 FreePointInfo FreePoint(CI, BasePtr, CI->getFunction(), CI->getParent(), CI, freeType);
                 FreePoint.FieldPath=CRW.FiledPath;
 
                 FreePoints.push_back(FreePoint);
+                retConditionFailFreePoints[V].insert(FreePoint);
 
                 errs() << "  Found condition free (indirect/direct): " << F->getName()
                 << " in Function " << CI->getFunction()->getName() << "\n";
@@ -1609,7 +1639,14 @@ void TaintPass::IdentifyAllFreePoints(Module *M) {
             AllFreePoints.push_back(FreePoint);
         }
     }
-    
+    //Handle conditional call situations
+    //std::map<Value*,std::set<FreePointInfo>> retFreePoint
+    for(auto& pair :retConditionFailFreePoints){
+        for(const FreePointInfo& refFreePoint:pair.second){
+            errs()<<refFreePoint.FreeType<<"\n";
+            AllFreePoints.push_back(refFreePoint);
+        }  
+    }
     errs() << "Total free points identified: " << AllFreePoints.size() << "\n";
 }
 
@@ -2984,7 +3021,7 @@ bool TaintPass::runOnModule(Module *M) {
 
 
     for(Function* F:Ctx->ErrorReturnFuncs){
-        errs()<< "-----------";
+        errs()<< "-----------\n";
         errs() << "Function " << F->getName() << " identified as an interprocedural error-propagating function\n";
         for(Value* V:retFunction[F]){
             if(retFreePoint.count(V)){
@@ -2994,7 +3031,7 @@ bool TaintPass::runOnModule(Module *M) {
                 errs() << "Function " << F->getName() <<" is conditionReleaseWraper\n";
             }
         }
-        errs()<< "------------";
+        errs()<< "------------\n";
     }
     
     // Phase 2 & 3: 构建CFG (Deprecated)
