@@ -495,6 +495,10 @@ void TaintPass::IdentifyErrReturnRelease(CallInst* CI,bool isConditionReleaseWap
     if(F->getName().contains("mlx5_ib_add")){
         printInstruction(CI);
     }
+    
+    if(F->getName().contains("mlx5_ib_stage_post_ib_reg_umr_init")){
+        printInstruction(CI);
+    }
     llvm::BasicBlock* CIBB=CI->getParent();
     if(retFunction.count(F) && retFunction[F].count(CI)){
         //Just focus on conditional release
@@ -1146,8 +1150,12 @@ void TaintPass::FindConditionReleaseWrapperFreePoints(Value *V, std::vector<Free
         for(Value* retValue:retFunction[F]){
             for(const ConditionReleaseWrapper& CRW:retConditionReleaseWrapper[retValue]){
                 std::string freeType = "condition_release[" + 
-                      std::to_string(CRW.argIdx) + "]"+" when condition fail of "+F->getName().str()\
+                      CRW.path + "]"+" when condition fail of "+F->getName().str()\
                       +" in "+ParentF->getName().str();
+
+        
+      
+    
                 Value *BasePtr = CI->getArgOperand(CRW.argIdx);           
                 FreePointInfo FreePoint(CI, BasePtr, CI->getFunction(), CI->getParent(), CI, freeType);
                 FreePoint.FieldPath=CRW.FiledPath;
@@ -1318,6 +1326,8 @@ void TaintPass::IdentifyErrorHandlingPaths(Function *F) {
     
     // Step 3: Identify error handling basic blocks based on error validation points
     
+    //----new 
+    std::set<llvm::BasicBlock*>  BIBB;
     for (Instruction *Validation : ErrorValidations) {
         for (User *U : Validation->users()) {
             if (BranchInst *BI = dyn_cast<BranchInst>(U)) {
@@ -1332,7 +1342,7 @@ void TaintPass::IdentifyErrorHandlingPaths(Function *F) {
                     } else {
                         DirectErrorBBs.insert(FalseBB);
                     }
-                    DirectErrorBBs.insert(BI->getParent());
+                    BIBB.insert(BI->getParent());
                 }
             }
         }
@@ -1433,14 +1443,17 @@ void TaintPass::IdentifyErrorHandlingPaths(Function *F) {
             }
         }
     }
+    ErrorHandlingBlocks.insert(BIBB.begin(),BIBB.end());
     
     // Fallback: If no direct error blocks found but we have sink blocks, 
     // assume all backward reachable blocks are relevant (conservative).
+    
     if (DirectErrorBBs.empty() && !BackReachable.empty()) {
         for (BasicBlock *BB : BackReachable) {
             ErrorHandlingBlocks.insert(BB);
         }
     }
+    
     
     // DEBUG PRINT (Final)
     if (F->getName().contains("__mlx5_ib_add")) {
@@ -1924,13 +1937,16 @@ void TaintPass::CheckCallInstWithDerefSummary(
                         continue;
 
                     vector<int> argPath = extractFieldPathFromValue(Arg);
-                    
+                    vector<int> BasePtrPath = extractFieldPathFromValue(Taint.TaintedValue);
+                    BasePtrPath.insert(BasePtrPath.end(),Taint.FieldPath.begin(),Taint.FieldPath.end());
+
                     for (ReleaseSummary *RS : entry.second) {
                         vector<int> wrapperPath = RS->getFieldPath();
                         vector<int> fullFreedPath = argPath;
                         fullFreedPath.insert(fullFreedPath.end(), wrapperPath.begin(), wrapperPath.end());
+                        //Taint.FieldPath should be set to all
                         
-                        if (fieldPathsOverlap(fullFreedPath, Taint.FieldPath)) {
+                        if (fieldPathsOverlap(fullFreedPath, BasePtrPath)) {
                             ReportUAFForFreePoint("double-free-wrapper", CI, Taint);
                             return; 
                         }

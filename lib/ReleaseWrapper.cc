@@ -324,13 +324,19 @@ void ReleaseWrapperAnalyzer::identifyReleaseRange(Function *F, CallInst* free_ca
         }
     }
 
+    if(F->getName().contains("mlx5r_umr_resource_cleanup")){
+        errs()<<"DEBUG";
+    }
+
     string fname = F->getName().str();
     if(Ctx->FreeArgMap.count(fname) || Ctx->FreeSensitiveFuncs.count(fname)) return;
 
+    /*
     if (Result.GlobalAnalyzedReleaseFuncMap.count(fname) &&
         Result.GlobalAnalyzedReleaseFuncMap[fname].count(free_cai) &&
         Result.GlobalAnalyzedReleaseFuncMap[fname][free_cai].count(free_id)
     ) { return; }
+      */
     Result.GlobalAnalyzedReleaseFuncMap[fname][free_cai].insert(free_id);
     
     bool is_error_path_free = false;
@@ -369,6 +375,7 @@ void ReleaseWrapperAnalyzer::identifyReleaseRange(Function *F, CallInst* free_ca
             next_downstream_paths.push_back(combined_path);
         }
     }
+
 
     if (Ctx->Callers.count(F)) {
         const CallInstSet &callers = Ctx->Callers[F];

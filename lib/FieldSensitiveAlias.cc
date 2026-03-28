@@ -1511,7 +1511,10 @@ Value* getBasePointer(Value *V) {
             V = BC->getOperand(0);
         } else if (CastInst *CI = dyn_cast<CastInst>(V)) {
             V = CI->getOperand(0);
-        } else {
+        } else if(LoadInst *LI = dyn_cast<LoadInst>(V)){
+            V=LI->getPointerOperand();
+        }
+        else {
             return V;
         }
     }
